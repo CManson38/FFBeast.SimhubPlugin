@@ -1,149 +1,280 @@
-using HidSharp;
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace FFBeast.SimHubPlugin
 {
-    /// <summary>
-    /// Client for communicating with FFBeast wheelbase via HID
-    /// </summary>
-    public class FFBeastWheelApiClient : IDisposable
-    {
-        private const int USB_VID = 1115;
-        private const int WHEEL_PID_FS = 22999;
-        
-        // Report types and commands from wheel_api.h
-        private const byte REPORT_GENERIC_INPUT_OUTPUT = 0xA3;
-        private const byte DATA_COMMAND_RESET_CENTER = 0x04;
-        private const byte DATA_COMMAND_REBOOT = 0x01;
-        
-        private HidDevice? _device;
-        private HidStream? _stream;
-        
-        public bool IsConnected => _stream != null && _device != null;
-        public string DeviceName => _device?.GetProductName() ?? "Not connected";
+    public enum WheelState { Disconnected, Connecting, Connected, Restarting, Stopped }
+    public enum CommandOutcome { Sent, Failed, Unconfirmed, Busy }
 
-        /// <summary>
-        /// Connect to the FFBeast wheelbase
-        /// </summary>
-        public bool Connect()
+    public sealed class WheelStatus
+    {
+        public WheelState State { get; }
+        public string DeviceName { get; }
+        public string Message { get; }
+        public WheelStatus(WheelState state, string deviceName, string message)
+        { State = state; DeviceName = deviceName; Message = message; }
+    }
+
+    public sealed class CommandResult
+    {
+        public CommandOutcome Outcome { get; }
+        public string Message { get; }
+        public CommandResult(CommandOutcome outcome, string message)
+        { Outcome = outcome; Message = message; }
+    }
+
+    /// <summary>Serializes all USB access; status reads never wait for USB.</summary>
+    public sealed partial class FFBeastWheelApiClient : IDisposable
+    {
+        private static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
+        private readonly object _gate = new object();
+        private readonly IWheelTransport _transport;
+        private readonly Action<string> _log;
+        private readonly Func<TimeSpan> _now;
+        private readonly Timer _monitor;
+        private IWheelConnection? _connection;
+        private string? _devicePath;
+        private TimeSpan _nextConnectionAttempt;
+        private TimeSpan _restartUntil;
+        private int _commandPending;
+        private int _stopping;
+        private volatile WheelStatus _status = new WheelStatus(WheelState.Disconnected, "Not connected", "Waiting for wheelbase.");
+
+        public FFBeastWheelApiClient(IWheelTransport transport, Action<string> log, Func<TimeSpan>? now = null)
         {
+            _transport = transport;
+            _log = log;
+            var clock = Stopwatch.StartNew();
+            _now = now ?? (() => clock.Elapsed);
+            _monitor = new Timer(_ => PollConnection(), null, Timeout.Infinite, Timeout.Infinite);
+        }
+
+        public WheelStatus Status => _status;
+        public bool IsConnected => Status.State == WheelState.Connected;
+        public string DeviceName => Status.DeviceName;
+        public WheelTelemetry? Telemetry
+        {
+            get
+            {
+                var sample = _telemetry;
+                return sample != null && DateTime.UtcNow - sample.SampledUtc <= TimeSpan.FromSeconds(1) ? sample : null;
+            }
+        }
+        public WheelSettings? Settings => _settings?.Clone();
+        public string SettingsMessage => _settingsMessage;
+        public string ActiveProfileName => _activeProfileName;
+        public bool ReducedStrengthActive => Volatile.Read(ref _restoreStrength) >= 0;
+
+        public void StartMonitoring()
+        {
+            lock (_gate)
+            {
+                if (Volatile.Read(ref _stopping) == 0) _monitor.Change(0, 50);
+            }
+        }
+
+        public Task<CommandResult> ReconnectAsync() => RunCommandAsync(() =>
+        {
+            if (_now() < _restartUntil) return RestartingResult();
+            CloseConnection();
+            if (!EnsureConnected(true)) return Result(CommandOutcome.Failed, Status.Message);
+            RefreshSettingsSafely();
+            return Result(CommandOutcome.Sent, "Connected to wheelbase.");
+        });
+
+        public Task<CommandResult> ResetCenterAsync() => RunCommandAsync(() => SendCommand(0x04, false));
+        public Task<CommandResult> RebootAsync() => RunCommandAsync(() => SendCommand(0x01, true));
+        public Task<CommandResult> SaveAndRebootAsync() => RunCommandAsync(() => SendCommand(0x02, true));
+
+        private async Task<CommandResult> RunCommandAsync(Func<CommandResult> command)
+        {
+            // Drop overlapping presses instead of queuing delayed commands or another reboot.
+            if (Interlocked.CompareExchange(ref _commandPending, 1, 0) != 0)
+                return Result(CommandOutcome.Busy, "Another wheel command is in progress.");
             try
             {
-                // Dispose any existing connection first
-                Dispose();
-                
-                var deviceList = DeviceList.Local;
-                var hidDevices = deviceList.GetHidDevices(USB_VID, WHEEL_PID_FS);
-                
-                SimHub.Logging.Current.Info($"[FFBeast Plugin] Found {hidDevices.Count()} device(s) with VID:{USB_VID}, PID:{WHEEL_PID_FS}");
-                
-                foreach (var device in hidDevices)
+                return await Task.Run(() =>
                 {
-                    // We need the vendor interface (interface 0) which has 65-byte reports
-                    // The joystick interface has smaller reports
-                    var maxOutput = device.GetMaxOutputReportLength();
-                    SimHub.Logging.Current.Info($"[FFBeast Plugin] Checking device: {device.GetProductName()}, Max Output: {maxOutput}, Path: {device.DevicePath}");
-                    
-                    if (maxOutput < 65)
+                    lock (_gate)
                     {
-                        SimHub.Logging.Current.Info($"[FFBeast Plugin] Skipping device (wrong interface, output length {maxOutput} < 65)");
-                        continue;
+                        if (Volatile.Read(ref _stopping) != 0)
+                            return Result(CommandOutcome.Failed, "Plugin is stopped.");
+                        try { return command(); }
+                        catch (Exception ex)
+                        {
+                            Disconnect("Wheel command failed: " + ex.Message);
+                            _log("Unexpected command error: " + ex);
+                            return Result(CommandOutcome.Failed, Status.Message);
+                        }
                     }
-                    
+                }).ConfigureAwait(false);
+            }
+            finally { Interlocked.Exchange(ref _commandPending, 0); }
+        }
+
+        private CommandResult SendCommand(byte command, bool reboot)
+        {
+            if (_now() < _restartUntil) return RestartingResult();
+            // Replace stale handles before writing. Writes themselves are never retried.
+            if (!EnsureConnected(true)) return Result(CommandOutcome.Failed, Status.Message);
+            var report = new byte[65];
+            string operation = command == 0x02 ? "Save & Reboot" : "Reboot";
+            report[0] = 0xA3;
+            report[1] = command;
+            try
+            {
+                _connection!.Write(report);
+                return Result(CommandOutcome.Sent, reboot
+                    ? operation + " command sent. Waiting for the wheelbase to reconnect."
+                    : "Recenter command sent.");
+            }
+            catch (Exception ex) when (reboot && (ex is IOException || ex is TimeoutException))
+            {
+                _log(operation + " write interrupted; the wheel may already be restarting: " + ex);
+                return Result(CommandOutcome.Unconfirmed,
+                    operation + " could not be confirmed. The wheel may be restarting; waiting to reconnect. The command will not be retried.");
+            }
+            catch (Exception ex)
+            {
+                Disconnect("Command failed: " + ex.Message + " The command was not retried.");
+                _log("USB write failed: " + ex);
+                return Result(CommandOutcome.Failed, Status.Message);
+            }
+            finally
+            {
+                if (reboot)
+                {
+                    CloseConnection();
+                    _restartUntil = _now() + ReconnectInterval;
+                    _nextConnectionAttempt = _restartUntil;
+                    SetStatus(WheelState.Restarting, "Not connected", "Waiting for wheelbase restart; reconnecting automatically.");
+                }
+            }
+        }
+
+        internal void PollConnection()
+        {
+            // Timer callbacks never queue behind a command or shutdown.
+            if (!Monitor.TryEnter(_gate)) return;
+            try
+            {
+                if (Volatile.Read(ref _stopping) == 0 && EnsureConnected(false) && _now() >= _nextSettingsRead)
+                    RefreshSettingsSafely();
+            }
+            catch (Exception ex)
+            {
+                Disconnect("Connection check failed: " + ex.Message);
+                _log("Connection check error: " + ex);
+            }
+            finally { Monitor.Exit(_gate); }
+        }
+
+        private bool EnsureConnected(bool immediate)
+        {
+            if (_now() < _restartUntil) return false;
+            if (_connection != null)
+            {
+                try
+                {
+                    // Enumeration catches removal; bounded reads catch stale reused paths.
+                    if (!_transport.Enumerate().Any(d => d.DevicePath == _devicePath))
+                        throw new IOException("Wheelbase was unplugged.");
+                    _telemetry = _connection.ReadStatus();
+                    return true;
+                }
+                catch (Exception ex) { Disconnect("Connection lost: " + ex.Message); }
+            }
+            if (!immediate && _now() < _nextConnectionAttempt) return false;
+            _nextConnectionAttempt = _now() + ReconnectInterval;
+            SetStatus(WheelState.Connecting, "Not connected", "Looking for wheelbase.");
+            string failure = "Wheelbase not found. Retrying automatically.";
+            try
+            {
+                foreach (var device in _transport.Enumerate())
+                {
+                    IWheelConnection? candidate = null;
                     try
                     {
-                        _device = device;
-                        _stream = device.Open();
-                        SimHub.Logging.Current.Info($"[FFBeast Plugin] ✓ Connected to wheelbase: {device.GetProductName()} (Max Output: {maxOutput})");
+                        if (!IsVendorInterface(device)) continue;
+                        var name = device.DeviceName;
+                        var path = device.DevicePath;
+                        candidate = device.Open();
+                        var telemetry = candidate.ReadStatus();
+                        _connection = candidate;
+                        candidate = null;
+                        _devicePath = path;
+                        _telemetry = telemetry;
+                        _nextSettingsRead = TimeSpan.Zero;
+                        SetStatus(WheelState.Connected, name, "Wheelbase is responding.");
                         return true;
                     }
                     catch (Exception ex)
                     {
-                        SimHub.Logging.Current.Warn($"[FFBeast Plugin] Failed to open device: {ex.Message}");
-                        continue;
+                        failure = "Unable to connect: " + ex.Message + " Retrying automatically.";
+                        _log("Could not open vendor interface: " + ex);
+                    }
+                    finally
+                    {
+                        try { candidate?.Dispose(); }
+                        catch (Exception ex) { _log("Failed to close candidate: " + ex); }
                     }
                 }
-                
-                SimHub.Logging.Current.Warn("[FFBeast Plugin] Wheelbase not found or unable to open vendor interface. Make sure it's connected.");
-                return false;
             }
             catch (Exception ex)
             {
-                SimHub.Logging.Current.Error($"[FFBeast Plugin] Error connecting to device: {ex.Message}");
-                return false;
+                failure = "Device enumeration failed: " + ex.Message + " Retrying automatically.";
+                _log(failure);
             }
+            SetStatus(WheelState.Disconnected, "Not connected", failure);
+            return false;
         }
 
-        /// <summary>
-        /// Send the reset center command to the wheelbase
-        /// </summary>
-        public bool ResetCenter()
+        internal static bool IsVendorInterface(IWheelDevice device) =>
+            device.DevicePath.IndexOf("&mi_00", StringComparison.OrdinalIgnoreCase) >= 0 &&
+            device.InputReportLength == 65 && device.OutputReportLength == 65;
+
+        private CommandResult RestartingResult() => Result(CommandOutcome.Busy, "Wheelbase is restarting. Please wait for reconnection.");
+        private CommandResult Result(CommandOutcome outcome, string message)
         {
-            if (!IsConnected)
-            {
-                SimHub.Logging.Current.Warn("[FFBeast Plugin] Cannot reset center: Device not connected!");
-                return false;
-            }
-
-            try
-            {
-                // Create HID report buffer (65 bytes: Report ID + 64 bytes data)
-                byte[] buffer = new byte[65];
-                buffer[0] = REPORT_GENERIC_INPUT_OUTPUT;
-                buffer[1] = DATA_COMMAND_RESET_CENTER;
-                
-                _stream!.Write(buffer, 0, buffer.Length);
-                SimHub.Logging.Current.Info("[FFBeast Plugin] Reset center command sent successfully!");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                SimHub.Logging.Current.Error($"[FFBeast Plugin] Error sending reset center command: {ex.Message}");
-                return false;
-            }
+            _log(outcome + ": " + message);
+            return new CommandResult(outcome, message);
         }
-
-        /// <summary>
-        /// Reboot the wheelbase controller
-        /// </summary>
-        public bool Reboot()
+        private void SetStatus(WheelState state, string name, string message)
         {
-            if (!IsConnected)
-            {
-                SimHub.Logging.Current.Warn("[FFBeast Plugin] Cannot reboot: Device not connected!");
-                return false;
-            }
-
-            try
-            {
-                byte[] buffer = new byte[65];
-                buffer[0] = REPORT_GENERIC_INPUT_OUTPUT;
-                buffer[1] = DATA_COMMAND_REBOOT;
-                
-                _stream!.Write(buffer, 0, buffer.Length);
-                SimHub.Logging.Current.Info("[FFBeast Plugin] Reboot command sent successfully!");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                SimHub.Logging.Current.Error($"[FFBeast Plugin] Error sending reboot command: {ex.Message}");
-                return false;
-            }
+            if (_status.State != state || _status.Message != message) _log(state + ": " + message);
+            _status = new WheelStatus(state, name, message);
         }
-
+        private void Disconnect(string message)
+        {
+            CloseConnection();
+            _nextConnectionAttempt = _now() + ReconnectInterval;
+            SetStatus(WheelState.Disconnected, "Not connected", message);
+        }
+        private void CloseConnection()
+        {
+            var old = _connection;
+            _connection = null;
+            _devicePath = null;
+            _telemetry = null;
+            _settings = null;
+            _settingsMessage = "Wheel settings are unavailable while disconnected.";
+            _restoreStrength = -1;
+            _activeProfileName = "";
+            try { old?.Dispose(); }
+            catch (Exception ex) { _log("Failed to close HID connection: " + ex); }
+        }
         public void Dispose()
         {
-            try
+            Interlocked.Exchange(ref _stopping, 1);
+            _monitor.Dispose();
+            lock (_gate)
             {
-                _stream?.Close();
-                _stream?.Dispose();
-            }
-            catch { }
-            finally
-            {
-                _stream = null;
-                _device = null;
+                CloseConnection();
+                SetStatus(WheelState.Stopped, "Not connected", "Plugin is stopped.");
             }
         }
     }

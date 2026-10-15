@@ -126,6 +126,7 @@ config.local.json
 settings.local.json
 
 # Release artifacts
+artifacts/
 release/
 release-files/
 release-notes.md

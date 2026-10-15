@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net48;net9.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="FeatureTests.cs" />
+    <Compile Include="..\FFBeastWheelApiClient.cs" Link="FFBeastWheelApiClient.cs" />
+    <Compile Include="..\FFBeastWheelSettingsClient.cs" Link="FFBeastWheelSettingsClient.cs" />
+    <Compile Include="..\WheelTransport.cs" Link="WheelTransport.cs" />
+    <Compile Include="..\WheelProtocol.cs" Link="WheelProtocol.cs" />
+    <Compile Include="..\WheelProfiles.cs" Link="WheelProfiles.cs" />
+  </ItemGroup>
+</Project>

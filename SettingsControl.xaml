@@ -1,51 +1,122 @@
 <UserControl x:Class="FFBeast.SimHubPlugin.SettingsControl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
-             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
-             mc:Ignorable="d" 
-             d:DesignHeight="300" d:DesignWidth="500">
-    <StackPanel Margin="10">
-        <TextBlock Text="FFBeast Wheelbase Control" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
-        
-        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10">
-            This plugin allows you to control your FFBeast wheelbase from SimHub.
-            Map controller buttons to the available actions in the Controls settings.
-        </TextBlock>
-        
-        <GroupBox Header="Connection Status" Margin="0,0,0,10">
-            <StackPanel Margin="5">
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                    <TextBlock Text="Status: " FontWeight="Bold" Width="80"/>
-                    <TextBlock x:Name="StatusText" Text="Unknown" />
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="12">
+            <TextBlock Text="FFBeast Wheelbase Control" FontSize="18" FontWeight="Bold" Margin="0,0,0,10"/>
+            <GroupBox Header="Connection and wheel telemetry" Margin="0,0,0,10">
+                <StackPanel Margin="8">
+                    <WrapPanel>
+                        <TextBlock Text="Status: " FontWeight="Bold"/>
+                        <TextBlock x:Name="StatusText" Text="Unknown" Margin="0,0,15,0"/>
+                        <TextBlock x:Name="DeviceText" Text="Not connected"/>
+                    </WrapPanel>
+                    <TextBlock x:Name="ConnectionMessageText" TextWrapping="Wrap" Margin="0,3"/>
+                    <TextBlock x:Name="TelemetryText" Text="Waiting for wheel telemetry." Margin="0,3"/>
+                    <TextBlock x:Name="CurrentSettingsText" TextWrapping="Wrap" Margin="0,3"/>
+                    <TextBlock x:Name="ActiveProfileText" Margin="0,3"/>
+                    <Button x:Name="ReconnectButton" Content="Reconnect" Width="100" HorizontalAlignment="Left" Click="ReconnectButton_Click" Margin="0,5,0,0"/>
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                    <TextBlock Text="Device: " FontWeight="Bold" Width="80"/>
-                    <TextBlock x:Name="DeviceText" Text="Not connected" />
-                </StackPanel>
-                <Button x:Name="ReconnectButton" Content="Reconnect" Width="100" HorizontalAlignment="Left" Margin="0,5,0,0" Click="ReconnectButton_Click"/>
-            </StackPanel>
-        </GroupBox>
-        
-        <GroupBox Header="Available Actions" Margin="0,0,0,10">
-            <StackPanel Margin="5">
-                <TextBlock Text="• FFBeast.ResetCenter - Reset wheelbase center position" Margin="0,2"/>
-                <TextBlock Text="• FFBeast.Reboot - Reboot wheelbase controller" Margin="0,2"/>
-            </StackPanel>
-        </GroupBox>
-        
-        <GroupBox Header="Quick Test" Margin="0,0,0,10">
-            <StackPanel Margin="5">
-                <Button x:Name="TestRecenterButton" Content="Test Recenter" Width="120" HorizontalAlignment="Left" Margin="0,0,0,5" Click="TestRecenterButton_Click"/>
-                <TextBlock Text="Test the recenter function" FontSize="10" Foreground="Gray" Margin="0,0,0,10"/>
-                <Button x:Name="TestRebootButton" Content="Test Reboot" Width="120" HorizontalAlignment="Left" Margin="0,0,0,5" Click="TestRebootButton_Click"/>
-                <TextBlock Text="Reboot the wheelbase (use with caution)" FontSize="10" Foreground="Gray"/>
-            </StackPanel>
-        </GroupBox>
-        
-        <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="Gray">
-            To use: Go to Controls and Events → Controls → New Mapping → 
-            Press a button on your device and Select one of the FFBeast actions to bind to that button/key.
-        </TextBlock>
-    </StackPanel>
+            </GroupBox>
+            <TabControl x:Name="MainTabs">
+                <TabItem Header="Wheel settings">
+                    <StackPanel x:Name="WheelCommands" Margin="8">
+                        <TextBlock Text="Changes apply to the current session. Save &amp; Reboot makes the wheel's current settings persistent." TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <WrapPanel Margin="0,0,0,8">
+                            <Button Content="Read current settings" Click="ReadSettings_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="FFB strength -5%" Tag="-5" Click="AdjustStrength_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="FFB strength +5%" Tag="5" Click="AdjustStrength_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Toggle reduced strength" Click="ReducedStrength_Click" Padding="8,4"/>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock Text="Strength presets: " VerticalAlignment="Center"/>
+                            <Button Content="25%" Tag="25" Click="StrengthPreset_Click" Padding="8,4" Margin="0,0,5,0"/>
+                            <Button Content="50%" Tag="50" Click="StrengthPreset_Click" Padding="8,4" Margin="0,0,5,0"/>
+                            <Button Content="75%" Tag="75" Click="StrengthPreset_Click" Padding="8,4" Margin="0,0,5,0"/>
+                            <Button Content="100%" Tag="100" Click="StrengthPreset_Click" Padding="8,4"/>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock Text="Rotation presets: " VerticalAlignment="Center"/>
+                            <Button Content="360°" Tag="360" Click="RotationPreset_Click" Padding="8,4" Margin="0,0,5,0"/>
+                            <Button Content="540°" Tag="540" Click="RotationPreset_Click" Padding="8,4" Margin="0,0,5,0"/>
+                            <Button Content="900°" Tag="900" Click="RotationPreset_Click" Padding="8,4" Margin="0,0,5,0"/>
+                            <Button Content="1080°" Tag="1080" Click="RotationPreset_Click" Padding="8,4"/>
+                        </WrapPanel>
+                        <Grid Margin="0,0,0,8" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="180"/><ColumnDefinition Width="90"/><ColumnDefinition Width="140"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                                <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="FFB strength" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" x:Name="StrengthInput" Margin="3" Text="50"/>
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="% (0–100)" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="1" Text="Rotation range" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="RotationInput" Margin="3" Text="900"/>
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="degrees (1–65535)" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="2" Text="Static damping" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="DampingInput" Margin="3" Text="0"/>
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="% (0–100)" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="3" Text="Integrated spring" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" x:Name="SpringInput" Margin="3" Text="0"/>
+                            <TextBlock Grid.Row="3" Grid.Column="2" Text="% (0–100)" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="4" Text="Soft-stop strength" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" x:Name="SoftStopStrengthInput" Margin="3" Text="0"/>
+                            <TextBlock Grid.Row="4" Grid.Column="2" Text="% (0–100)" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="5" Text="Soft-stop range" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="5" Grid.Column="1" x:Name="SoftStopRangeInput" Margin="3" Text="0"/>
+                            <TextBlock Grid.Row="5" Grid.Column="2" Text="extra degrees (0–255)" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="6" Text="Soft-stop damping" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="6" Grid.Column="1" x:Name="SoftStopDampingInput" Margin="3" Text="0"/>
+                            <TextBlock Grid.Row="6" Grid.Column="2" Text="% (0–100)" VerticalAlignment="Center"/>
+                            <CheckBox Grid.Row="7" Grid.ColumnSpan="3" x:Name="ForceEnabledInput" Content="FFB enabled" IsChecked="True" Margin="0,8,0,0"/>
+                        </Grid>
+                        <WrapPanel Margin="0,0,0,12">
+                            <Button Content="Apply editor settings" Click="ApplySettings_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Toggle FFB now" Click="ToggleForce_Click" Padding="8,4"/>
+                        </WrapPanel>
+                        <Separator/>
+                        <WrapPanel Margin="0,10,0,0">
+                            <Button x:Name="TestRecenterButton" Content="Test Recenter" Click="TestRecenterButton_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button x:Name="TestRebootButton" Content="Test Reboot" Click="TestRebootButton_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Save &amp; Reboot" Click="SaveAndReboot_Click" Padding="8,4"/>
+                        </WrapPanel>
+                    </StackPanel>
+                </TabItem>
+                <TabItem Header="Profiles">
+                    <StackPanel x:Name="ProfileControls" Margin="8">
+                        <TextBlock Text="Profiles store the values from the Wheel settings editor in SimHub. Applying a profile does not save it permanently to the wheel." TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <ComboBox x:Name="ProfileCombo" SelectionChanged="ProfileCombo_SelectionChanged" Margin="0,0,0,8"/>
+                        <TextBlock Text="Profile name"/>
+                        <TextBox x:Name="ProfileNameInput" Margin="0,3,0,8"/>
+                        <TextBlock Text="Game name for automatic matching (blank = manual only)"/>
+                        <TextBox x:Name="ProfileGameInput" Margin="0,3,0,8"/>
+                        <TextBlock Text="Car model for automatic matching (blank = any car in that game)"/>
+                        <TextBox x:Name="ProfileCarInput" Margin="0,3,0,8"/>
+                        <Button Content="Use current game and car" Click="UseCurrentContext_Click" HorizontalAlignment="Left" Padding="8,4" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="ProfileSummaryText" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <WrapPanel Margin="0,0,0,8">
+                            <Button Content="Save editor as new profile" Click="SaveNewProfile_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Update selected from editor" Click="UpdateProfile_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Delete selected" Click="DeleteProfile_Click" Padding="8,4"/>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,12">
+                            <Button Content="Apply selected profile" Click="ApplyProfile_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Previous profile" Tag="-1" Click="CycleProfile_Click" Padding="8,4" Margin="0,0,6,0"/>
+                            <Button Content="Next profile" Tag="1" Click="CycleProfile_Click" Padding="8,4"/>
+                        </WrapPanel>
+                        <CheckBox x:Name="AutoApplyInput" Content="Automatically apply matching profiles" Checked="AutoApply_Changed" Unchecked="AutoApply_Changed"/>
+                        <TextBlock Text="Automatic matching is off by default. When enabled, a matching profile is applied once on a game/car change while stationary (at most 1 km/h), outside replays. Car-specific matches take priority. No profile is reapplied on wheel reconnection." TextWrapping="Wrap" Margin="0,5,0,0"/>
+                    </StackPanel>
+                </TabItem>
+                <TabItem Header="Button mappings">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Map these actions in SimHub Controls and Events. Strength and damping steps are 5 percentage points; soft-stop range steps are 5 degrees. Next/Previous Profile selects and applies the adjacent profile." TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <TextBox x:Name="ActionsText" IsReadOnly="True" BorderThickness="0" TextWrapping="Wrap" AcceptsReturn="True"/>
+                    </StackPanel>
+                </TabItem>
+            </TabControl>
+            <TextBlock x:Name="ResultText" TextWrapping="Wrap" Margin="0,10,0,4"/>
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>

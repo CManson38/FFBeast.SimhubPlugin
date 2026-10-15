@@ -12,7 +12,11 @@ A SimHub plugin that allows you to control your FFBeast wheelbase directly from 
 
 - **Reset Center**: Recalibrate the wheelbase center position with a button press
 - **Reboot Controller**: Restart the wheelbase controller
-- **Auto-reconnect**: Automatically reconnects to the wheelbase if connection is lost
+- **Wheel settings**: Strength presets and +/- controls, reduced-strength toggle, rotation presets, damping, integrated spring, soft stops, and FFB enable/disable
+- **Profiles**: Save named presets in SimHub, apply/cycle them from buttons, and optionally match games/cars while stationary
+- **Read-only telemetry**: Live steering position, normalized torque output, firmware version, and current wheel settings for dashboards and formulas
+- **Save & Reboot**: Explicitly save the wheel's current settings permanently and restart it
+- **Auto-reconnect**: Detects lost connections and reconnects even when no game is running
 - **SimHub Integration**: Full integration with SimHub's control mapping system
 - **Settings UI**: Test actions and view connection status directly in SimHub settings
 
@@ -29,8 +33,8 @@ A SimHub plugin that allows you to control your FFBeast wheelbase directly from 
 
 1. Go to the [Releases](https://github.com/CoryManson/FFBeast.SimhubPlugin/releases) page
 2. Download the latest `FFBeast.SimHubPlugin-vX.X.X.zip` file
-3. Extract all files from the ZIP archive
-4. Copy all DLL files to your SimHub installation directory:
+3. Close SimHub and extract the ZIP archive
+4. Copy `FFBeast.SimHubPlugin.dll` (and optional PDB) to your SimHub installation directory. Preserve SimHub's existing `HidSharp.dll` and other shared dependencies:
    ```
    C:\Program Files (x86)\SimHub\
    ```
@@ -60,10 +64,12 @@ A SimHub plugin that allows you to control your FFBeast wheelbase directly from 
    dotnet build FFBeast.SimHubPlugin.csproj -c Release
    ```
 
-5. **Copy to SimHub**:
+5. **Test and deploy to SimHub** (close SimHub first; deployment backs up the installed plugin):
    ```powershell
-   Copy-Item "bin\Release\net48\FFBeast.SimHubPlugin*" "C:\Program Files (x86)\SimHub\" -Force
+   .\build.ps1 -Test -Deploy
    ```
+
+   Building alone never changes the SimHub installation. Use `-SimHubPath 'C:\Your\SimHub'` for a non-default installation. Existing build output can be installed with `.\deploy.ps1`.
 
 6. **Restart SimHub**:
    - Close and restart SimHub to load the plugin
@@ -83,6 +89,7 @@ A SimHub plugin that allows you to control your FFBeast wheelbase directly from 
 4. **Available Actions**:
    - `FFBeast.ResetCenter` - Reset wheelbase center position
    - `FFBeast.Reboot` - Reboot the wheelbase controller
+   - See the action reference below or the plugin's **Button mappings** tab for the complete list
 
 5. **Map to Your Controller**:
    - Select the action (e.g., `FFBeast.ResetCenter`)
@@ -109,6 +116,78 @@ Access the plugin settings in SimHub:
    - **Test Recenter** - Immediately recenter the wheelbase
    - **Test Reboot** - Reboot the wheelbase (with confirmation dialog)
 
+Test buttons and mapped actions share the same background command path. Overlapping requests are rejected instead of queued. Results appear beneath the test buttons and in the SimHub log.
+
+Reboot always closes the old USB handle and waits at least five seconds before reconnecting. If Windows reports a timeout or disconnect during reboot, the result is **unconfirmed**: the wheel may already be restarting. The plugin never automatically resends a command. `Connected` means the wheel has returned a valid status report; it does not confirm that a previous command executed.
+
+### Wheel settings and persistence
+
+Open **Wheel settings** and use **Read current settings** to load the editor from the wheel. Preset buttons apply immediately. **Apply editor settings** validates all values, writes only changed fields, and reads the wheel settings back before reporting success. The editor stays unchanged during ordinary polling so unsaved edits are preserved.
+
+| Setting | Values |
+| --- | --- |
+| Strength, static damping, integrated spring, soft-stop strength/damping | 0–100% |
+| Rotation range | 1–65535° (protocol range); quick presets: 360°, 540°, 900°, 1080° |
+| Soft-stop range | 0–255 extra degrees beyond rotation range |
+| FFB enabled | On/off |
+
+The reduced-strength toggle caps the current strength at 25% and remembers the previous strength for the next toggle. It never increases a strength already below 25%. Manual strength changes, external strength changes, and disconnects clear the remembered restore value.
+
+Changes remain temporary until **Save & Reboot** is explicitly invoked. That action saves the settings currently on the wheel, including changes made by other applications; it does not apply unsaved editor values. Saving a SimHub profile only writes a preset to SimHub's common plugin settings.
+
+Profile application uses multiple USB writes. Force disable is sent first when requested, and force enable is sent last when needed. If a write or readback fails, the result is unconfirmed and some changes may already have applied. The plugin stops, releases the handle, and never resends those writes. Reconnect/read current settings before deciding what to apply next.
+
+### Profiles
+
+1. Read the wheel settings or edit the values on the **Wheel settings** tab.
+2. On **Profiles**, enter a name and choose **Save editor as new profile**. Use **Update selected from editor** to replace an existing preset.
+3. Select a profile to load its values into the editor; choose **Apply selected profile** to change the wheel.
+4. Map **ApplySelectedProfile**, **NextProfile**, or **PreviousProfile** to wheel buttons. Next/Previous selects and applies the adjacent profile.
+
+Automatic profile matching is **off by default**. To opt in, give a profile an exact game name and optionally a car model (or use **Use current game and car**), save it, and enable **Automatically apply matching profiles**. Matches ignore case, and car-specific rules take priority over game-only rules. A match is attempted once per game/car context when speed is at most 1 km/h and the game is outside a replay. A failed partial application is not automatically retried; a busy request can be deferred. Reconnecting the wheel does not reapply an already attempted profile. Profiles with no game name are manual only.
+
+### Action reference
+
+All names below have the `FFBeast.` prefix.
+
+| Actions | Behavior |
+| --- | --- |
+| `ResetCenter`, `Reboot`, `SaveAndReboot` | Controller commands; SaveAndReboot is the only persistent-save action |
+| `Reconnect`, `ReadSettings` | Refresh connection or current wheel settings |
+| `StrengthIncrease`, `StrengthDecrease` | Adjust strength by 5 percentage points, clamped to 0–100% |
+| `Strength25`, `Strength50`, `Strength75`, `Strength100` | Apply a strength preset |
+| `ToggleReducedStrength` | Cap strength at 25% / restore previous strength |
+| `Rotation360`, `Rotation540`, `Rotation900`, `Rotation1080` | Apply rotation range in degrees |
+| `DampingIncrease` / `DampingDecrease` | Adjust static damping by 5 percentage points |
+| `SpringIncrease` / `SpringDecrease` | Adjust integrated spring by 5 percentage points |
+| `SoftStopStrengthIncrease` / `SoftStopStrengthDecrease` | Adjust soft-stop strength by 5 percentage points |
+| `SoftStopDampingIncrease` / `SoftStopDampingDecrease` | Adjust soft-stop damping by 5 percentage points |
+| `SoftStopRangeIncrease` / `SoftStopRangeDecrease` | Adjust extra soft-stop range by 5 degrees |
+| `EnableFFB`, `DisableFFB`, `ToggleFFB` | Change the wheel's force-enable setting |
+| `ApplySelectedProfile`, `NextProfile`, `PreviousProfile` | Apply the selected/adjacent SimHub preset |
+
+Mapped actions execute directly; the Save & Reboot confirmation dialog applies to the settings UI button.
+
+### Dashboard properties
+
+Properties are declared under the plugin with the `FFBeast.` prefix (SimHub may display the plugin class prefix as well).
+
+| Properties | Meaning |
+| --- | --- |
+| `IsConnected`, `DeviceName`, `Status`, `ConnectionMessage` | Connection status |
+| `TelemetryValid`, `TelemetryTimestampUtc` | Whether a recent status sample is available, and its UTC timestamp |
+| `Position`, `PositionPercent` | Signed normalized steering position (-1 to +1), or percent |
+| `Torque`, `TorquePercent` | Signed normalized reported torque output, or percent; not calibrated Nm |
+| `FirmwareVersion`, `FirmwareReleaseType` | Firmware version and numeric firmware release-type code |
+| `SettingsValid`, `SettingsMessage` | Whether current wheel settings have been read successfully, with a diagnostic message |
+| `Strength`, `RotationRange`, `Damping`, `Spring` | Current settings read from the wheel |
+| `SoftStopStrength`, `SoftStopRange`, `SoftStopDamping`, `ForceEnabled` | Current soft-stop and force-enable settings |
+| `ReducedStrengthActive`, `ActiveProfile`, `SelectedProfile` | Session reduction state and profile names |
+
+Telemetry snapshots refresh at up to 20 Hz; the input reader continuously drains USB reports to avoid a stale backlog. Settings refresh every five seconds and after commands. Numeric telemetry/settings properties become null when unavailable. `ActiveProfile` is cleared on disconnect, manual tuning, or a detected external settings change.
+
+The plugin does not generate telemetry-driven effects or send direct-force override reports. iRacing continues to generate the native FFB; the controls above adjust the wheelbase's own settings only.
+
 ## Troubleshooting
 
 ### Plugin Not Showing Up
@@ -123,7 +202,7 @@ Access the plugin settings in SimHub:
 - Make sure the FFBeast wheelbase is connected via USB
 - Check Windows Device Manager for the device (VID: 1115, PID: 22999)
 - Try unplugging and reconnecting the wheelbase
-- The plugin auto-reconnects every 5 seconds if disconnected
+- The plugin monitors live status and retries failed connections at least 5 seconds apart, including while no game is running
 
 ### Button Mapping Not Working
 
@@ -138,20 +217,26 @@ Access the plugin settings in SimHub:
 ### Project Structure
 
 ```
-simhub-wheel-api/
+FFBeast.SimhubPlugin/
 ├── FFBeast.SimHubPlugin.csproj   # Modern SDK-style project file
-├── FFBeastPlugin.cs              # Main plugin class (IPlugin, IDataPlugin, IWPFSettings)
-├── FFBeastWheelApiClient.cs      # HID communication layer using HidSharp
+├── FFBeastPlugin.cs              # SimHub actions, properties and lifecycle
+├── FFBeastWheelApiClient.cs      # Serialized commands and connection recovery
+├── FFBeastWheelSettingsClient.cs # Settings changes and readback verification
+├── WheelProtocol.cs              # Packed reports, settings limits and telemetry decoding
+├── WheelProfiles.cs              # Profile models, matching and cycling
+├── WheelTransport.cs            # Testable USB transport contracts
+├── HidWheelTransport.cs         # HidSharp adapter with bounded reads/writes
 ├── SettingsControl.xaml          # WPF settings UI
 ├── SettingsControl.xaml.cs       # Settings UI code-behind
 ├── build.ps1                     # PowerShell build script
+├── deploy.ps1                    # Explicit deployment with backup and rollback on failure
+├── tests/                        # Regression runner and WPF/hardware smoke checks
 ├── Properties/                   # Assembly metadata and resources
 │   ├── AssemblyInfo.cs
 │   ├── Resources.resx
 │   └── Resources.Designer.cs
 ├── README.md                     # This file
-├── QUICKSTART.md                 # Quick start guide
-└── BUILD.md                      # Detailed build instructions
+└── TESTING.md                    # Automated and manual verification
 ```
 
 ### HID Communication Protocol
@@ -169,10 +254,14 @@ buffer[1] = COMMAND;                      // Command byte
 **Supported Commands**:
 - `0x04` - Reset center position (recenter the wheelbase)
 - `0x01` - Reboot controller (restart the wheelbase)
+- `0x02` - Save current wheel settings and reboot
+- `0x14` - Change one settings field (field ID at byte 2, index 0 at byte 3, value at byte 4)
+
+Effect settings are read from feature report `0x22`, hardware settings from `0x21`, and live state from input report `0xA3`. All reports are 65 bytes. No direct-control/force-override report (`0x10`) is implemented.
 
 **Device Selection**:
 - VID: 1115 (0x045B), PID: 22999 (0x59D7)
-- Filters by `MaxOutputReportLength >= 65` to select the vendor interface (MI_00)
+- Requires MI_00 and exactly 65-byte input/output reports for the vendor interface
 - Avoids the joystick interface (MI_01) which has 18-byte reports
 
 ### Building for Distribution
@@ -185,7 +274,8 @@ buffer[1] = COMMAND;                      // Command byte
 2. Files to include in distribution (from `bin/Release/net48/`):
    - `FFBeast.SimHubPlugin.dll` - Main plugin assembly
    - `FFBeast.SimHubPlugin.pdb` - Debug symbols (optional)
-   - `HidSharp.dll` - HID communication library
+
+   SimHub supplies `HidSharp.dll`; do not overwrite it with the build's package copy. The plugin compiles against HidSharp 2.1.0 and the smoke checks exercise the installed SimHub version.
 
 ### Creating a Release
 
@@ -203,11 +293,10 @@ To create a release for distribution:
    
    # Copy required files
    Copy-Item "bin\Release\net48\FFBeast.SimHubPlugin.dll" release\
-   Copy-Item "bin\Release\net48\HidSharp.dll" release\
    Copy-Item "README.md" release\
    
    # Create ZIP archive
-   Compress-Archive -Path release\* -DestinationPath FFBeast.SimHubPlugin-v1.0.0.zip
+   Compress-Archive -Path release\* -DestinationPath FFBeast.SimHubPlugin-v1.2.0-test.zip
    ```
 
 3. **Create GitHub Release**:
@@ -221,7 +310,7 @@ To create a release for distribution:
 
 ### Dependencies
 
-- **HidSharp 2.1.0** - Cross-platform HID library for USB communication
+- **HidSharp 2.1.0** - Compile-time HID package; SimHub's installed library is used at runtime
 - **SimHub SDK DLLs** - GameReaderCommon, SimHub.Plugins, SimHub.Logging, log4net
 - **Target Framework**: .NET Framework 4.8 (SimHub compatibility)
 - **Build SDK**: .NET 9 SDK (modern SDK-style project format)
@@ -265,6 +354,22 @@ For issues or questions:
 - Open an issue on the project repository
 
 ## Version History
+
+### 1.2.0-test
+- Add verified wheel-setting changes, strength and rotation presets, reduced-strength toggle, and FFB enable/disable
+- Add damping, integrated spring, and soft-stop controls
+- Expose current wheel settings and live position/torque/firmware properties
+- Add named SimHub profiles, button-driven cycling, and optional stationary game/car matching
+- Add explicit Save & Reboot; keep routine settings/profile changes temporary
+- Expand regression coverage and WPF/profile persistence checks; no direct-force effects
+
+### 1.1.0-test
+- Recover stale or unplugged connections independently of game telemetry
+- Serialize connection access and run commands outside the UI thread
+- Release reboot handles, distinguish uncertain results, and prevent overlapping commands
+- Stop settings polling when the view unloads and remove private-field reflection
+- Add regression tests on .NET Framework 4.8 and .NET 9, WPF lifecycle checks, and optional read-only hardware checks
+- Make deployment explicit, preserve shared libraries, and back up the installed plugin
 
 ### 1.0.0 (2025-11-03)
 - Initial release
